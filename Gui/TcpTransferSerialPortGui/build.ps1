@@ -23,8 +23,8 @@ foreach ($framework in $frameworks) {
         foreach ($runtime in $runtimes) {
             Write-Host "Building for $framework - $configuration - $runtime" -ForegroundColor Green
 
-            # 构建路径
-            $buildPath = ".\bin\$configuration\$framework\$runtime"
+            # 构建路径 (注意这里改为 publish 子目录)
+            $buildPath = ".\bin\$configuration\$framework\$runtime\publish"
             
             # 发布应用
             dotnet publish "TcpTransferSerialPortGui.csproj" `
@@ -36,7 +36,7 @@ foreach ($framework in $frameworks) {
                 /p:IncludeNativeLibrariesForSelfExtract=true
 
             # 创建ZIP文件名
-            $zipName = "TcpTransferSerialPortGui-v$version-$framework-$configuration-$runtime.zip"
+            $zipName = "TcpTransferSerialPortGui-v$version-$framework-$runtime.zip"
             $zipPath = Join-Path $publishPath $zipName
 
             # 压缩文件
@@ -44,21 +44,24 @@ foreach ($framework in $frameworks) {
             Compress-Archive -Path "$buildPath\*" -DestinationPath $zipPath -Force
         }
 
-        # 创建便携版（不包含运行时）
-        Write-Host "Building portable version for $framework - $configuration" -ForegroundColor Green
+        # 创建依赖.NET运行时的版本
+        Write-Host "Building framework-dependent version for $framework - $configuration" -ForegroundColor Green
         
         dotnet publish "TcpTransferSerialPortGui.csproj" `
             -c $configuration `
             -f $framework `
-            --self-contained false
+            --self-contained false `
+            /p:PublishSingleFile=true `
+            /p:IncludeNativeLibrariesForSelfExtract=true `
+            /p:EnableCompressionInSingleFile=true
 
-        # 压缩便携版
-        $portableZipName = "TcpTransferSerialPortGui-v$version-$framework-$configuration-portable.zip"
-        $portablePath = Join-Path $publishPath $portableZipName
-        $portableBuildPath = ".\bin\$configuration\$framework\publish"
+        # 压缩框架依赖版本
+        $frameworkDependentZipName = "TcpTransferSerialPortGui-v$version-$framework-requires-runtime.zip"
+        $frameworkDependentPath = Join-Path $publishPath $frameworkDependentZipName
+        $frameworkDependentBuildPath = ".\bin\$configuration\$framework\publish"
         
-        Write-Host "Creating portable zip: $portableZipName" -ForegroundColor Yellow
-        Compress-Archive -Path "$portableBuildPath\*" -DestinationPath $portablePath -Force
+        Write-Host "Creating framework-dependent zip: $frameworkDependentZipName" -ForegroundColor Yellow
+        Compress-Archive -Path "$frameworkDependentBuildPath\*" -DestinationPath $frameworkDependentPath -Force
     }
 }
 
