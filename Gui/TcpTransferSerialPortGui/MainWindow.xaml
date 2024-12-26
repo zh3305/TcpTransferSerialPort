@@ -1,0 +1,78 @@
+﻿<Window x:Class="TcpTransferSerialPortGui.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:TcpTransferSerialPortGui"
+        mc:Ignorable="d"
+        Title="串口转发工具" Height="450" Width="800"
+        Icon="/image.ico">
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <GroupBox Header="配置" Grid.Row="0">
+            <Grid Margin="5">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <GroupBox Header="串口设置" Grid.Column="0" Margin="5">
+                    <StackPanel>
+                        <DockPanel Margin="0,5">
+                            <Label Content="串口：" Width="60"/>
+                            <ComboBox x:Name="ComPortComboBox"/>
+                        </DockPanel>
+                        <DockPanel Margin="0,5">
+                            <Label Content="波特率：" Width="60"/>
+                            <ComboBox x:Name="BaudRateComboBox"/>
+                        </DockPanel>
+                    </StackPanel>
+                </GroupBox>
+
+                <GroupBox Header="网络设置" Grid.Column="1" Margin="5">
+                    <StackPanel>
+                        <DockPanel Margin="0,5">
+                            <Label Content="模式：" Width="60"/>
+                            <ComboBox x:Name="NetworkModeComboBox" SelectionChanged="NetworkModeComboBox_SelectionChanged">
+                                <ComboBoxItem Content="TCP客户端"/>
+                                <ComboBoxItem Content="TCP服务器"/>
+                                <ComboBoxItem Content="UDP客户端"/>
+                                <ComboBoxItem Content="UDP服务器"/>
+                            </ComboBox>
+                        </DockPanel>
+                        <DockPanel Margin="0,5">
+                            <Label Content="IP地址：" Width="60"/>
+                            <ComboBox x:Name="IpAddressComboBox" Visibility="Collapsed"/>
+                            <TextBox x:Name="IpAddressTextBox"/>
+                        </DockPanel>
+                        <DockPanel Margin="0,5">
+                            <Label Content="端口：" Width="60"/>
+                            <TextBox x:Name="PortTextBox"/>
+                        </DockPanel>
+                    </StackPanel>
+                </GroupBox>
+            </Grid>
+        </GroupBox>
+
+        <GroupBox Header="日志" Grid.Row="1" Margin="0,10">
+            <TextBox x:Name="LogTextBox" IsReadOnly="True" VerticalScrollBarVisibility="Auto"/>
+        </GroupBox>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
+            
+            <CheckBox x:Name="ShowHexCheckBox" Content="显示HEX" 
+                      Margin="5,0,0,0" VerticalAlignment="Center"
+                      Checked="ShowHexCheckBox_Checked" 
+                      Unchecked="ShowHexCheckBox_Checked"/>
+            <Button x:Name="SerialPortButton" Content="打开串口" Width="100" Margin="5" Click="SerialPortButton_Click"/>
+            <Button x:Name="NetworkButton" Content="开始网络" Width="100" Margin="5" Click="NetworkButton_Click"/>
+            <Button x:Name="StopButton" Content="停止" Width="100" Margin="5" Click="StopButton_Click" IsEnabled="False"/>
+        </StackPanel>
+
+    </Grid>
+</Window>
