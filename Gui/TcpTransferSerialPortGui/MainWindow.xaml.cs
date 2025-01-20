@@ -9,6 +9,7 @@ using System.Linq;
 using System.Collections.Concurrent;
 using System.Threading.Tasks;
 using System.Threading;
+using System.Buffers;
 
 namespace TcpTransferSerialPortGui
 {
@@ -390,14 +391,6 @@ namespace TcpTransferSerialPortGui
                         var client = await _tcpListener.AcceptTcpClientAsync(_cancellationTokenSource.Token);
                         string clientEndPoint = ((IPEndPoint)client.Client.RemoteEndPoint).ToString();
 
-                        if (_connectedClients.Count >= MAX_TCP_CONNECTIONS)
-                        {
-                            LogMessage($"拒绝客户端连接 {clientEndPoint}: 已达到最大连接数");
-                            client.Close();
-                            _connectionLimitSemaphore.Release();
-                            continue;
-                        }
-
                         _connectedClients.TryAdd(clientEndPoint, client);
                         LogMessage($"客户端已连接: {clientEndPoint} (当前连接数: {_connectedClients.Count})");
 
@@ -460,19 +453,27 @@ namespace TcpTransferSerialPortGui
                                         {
                                             try
                                             {
-                                                int bytesRead = await clientStream.ReadAsync(buffer, 0, buffer.Length, _cancellationTokenSource.Token);
-                                                if (bytesRead == 0)
+                                                await _serialPortLock.WaitAsync(_cancellationTokenSource.Token);
+                                                try 
                                                 {
-                                                    LogMessage($"TCP({clientEndPoint})->串口: 连接已关闭");
-                                                    break;
+                                                    int bytesRead = await clientStream.ReadAsync(buffer, 0, buffer.Length, _cancellationTokenSource.Token);
+                                                    if (bytesRead == 0)
+                                                    {
+                                                        LogMessage($"TCP({clientEndPoint})->串口: 连接已关闭");
+                                                        break;
+                                                    }
+                                                    if (bytesRead > 0)
+                                                    {
+                                                        await _serialPort.BaseStream.WriteAsync(buffer.AsMemory(0, bytesRead), _cancellationTokenSource.Token);
+                                                        var data = new byte[bytesRead];
+                                                        Array.Copy(buffer, 0, data, 0, bytesRead);
+                                                        string hexString = _showHex ? $"\nHEX: {BitConverter.ToString(data)}" : "";
+                                                        LogMessage($"TCP({clientEndPoint})->串口: 传输 {bytesRead} 字节{hexString}");
+                                                    }
                                                 }
-                                                if (bytesRead > 0)
+                                                finally
                                                 {
-                                                    await _serialPort.BaseStream.WriteAsync(buffer.AsMemory(0, bytesRead), _cancellationTokenSource.Token);
-                                                    var data = new byte[bytesRead];
-                                                    Array.Copy(buffer, 0, data, 0, bytesRead);
-                                                    string hexString = _showHex ? $"\nHEX: {BitConverter.ToString(data)}" : "";
-                                                    LogMessage($"TCP({clientEndPoint})->串口: 传输 {bytesRead} 字节{hexString}");
+                                                    _serialPortLock.Release();
                                                 }
                                             }
                                             catch (OperationCanceledException)
@@ -481,7 +482,6 @@ namespace TcpTransferSerialPortGui
                                             }
                                             catch (IOException)
                                             {
-                                                // 如果发生IO错误，等待一段时间后继续
                                                 await Task.Delay(100, _cancellationTokenSource.Token);
                                             }
                                         }
@@ -498,6 +498,9 @@ namespace TcpTransferSerialPortGui
                                     }
                                 }, _cancellationTokenSource.Token);
 
+                                _activeTransferTasks.Add(serialToTcpTask);
+                                _activeTransferTasks.Add(tcpToSerialTask);
+                                
                                 await Task.WhenAll(serialToTcpTask, tcpToSerialTask);
                             }
                             catch (Exception ex)
@@ -611,61 +614,115 @@ namespace TcpTransferSerialPortGui
 
         private async Task CopyStreamAsync(Stream source, Stream destination, string direction, CancellationToken token)
         {
-            byte[] buffer = new byte[4096];
+            // 为每个传输任务分配独立的缓冲区
+            using var memoryOwner = MemoryPool<byte>.Shared.Rent(4096);
+            Memory<byte> buffer = memoryOwner.Memory;
             
             try
             {
-                using var registration = token.Register(() => {
-                    try {
-                        source?.Dispose();
-                        destination?.Dispose();
+                // 注册取消时的清理操作
+                using var registration = token.Register(() => 
+                {
+                    try 
+                    {
+                        if (IsSerialPortStream(source))
+                        {
+                            // 串口特殊处理
+                            if (_serialPort?.IsOpen == true)
+                            {
+                                _serialPort.DiscardInBuffer();
+                                _serialPort.DiscardOutBuffer();
+                            }
+                        }
                     }
                     catch { }
                 });
 
                 while (!token.IsCancellationRequested)
                 {
+                    int bytesRead;
+                    
+                    // 读取数据
+                    await _serialPortLock.WaitAsync(token);
                     try
                     {
-                        await _serialPortLock.WaitAsync(token);
+                        // 验证流的状态
+                        if (!IsStreamValid(source) || !IsStreamValid(destination))
+                        {
+                            LogMessage($"{direction}: 流已关闭或无效");
+                            break;
+                        }
+
                         try
                         {
-                            // 检查串口状态
-                            if (source.GetType().Name == "SerialPortStream" && !_serialPort.IsOpen)
-                            {
-                                LogMessage($"{direction}: 串口已关闭");
-                                break;
-                            }
-
-                            int bytesRead = await source.ReadAsync(buffer, 0, buffer.Length, token);
-                            
-                            if (bytesRead == 0)
-                            {
-                                LogMessage($"{direction}: 连接已正常关闭");
-                                break;
-                            }
-
-                            // 检查目标串口状态
-                            if (destination.GetType().Name == "SerialPortStream" && !_serialPort.IsOpen)
-                            {
-                                LogMessage($"{direction}: 目标串口已关闭");
-                                break;
-                            }
-
-                            await destination.WriteAsync(buffer.AsMemory(0, bytesRead), token);
-                            var data = new byte[bytesRead];
-                            Array.Copy(buffer, 0, data, 0, bytesRead);
-                            string hexString = _showHex ? $"\nHEX: {BitConverter.ToString(data)}" : "";
-                            LogMessage($"{direction}: 传输 {bytesRead} 字节{hexString}");
+                            bytesRead = await source.ReadAsync(buffer, token);
                         }
-                        finally
+                        catch (IOException ex)
                         {
-                            _serialPortLock.Release();
+                            LogMessage($"{direction} 读取错误: {ex.Message}");
+                            await Task.Delay(100, token); // 短暂延迟后继续
+                            continue;
                         }
                     }
-                    catch (OperationCanceledException) when (token.IsCancellationRequested)
+                    finally
                     {
-                        throw;
+                        _serialPortLock.Release();
+                    }
+
+                    // 检查是否读取到数据
+                    if (bytesRead == 0)
+                    {
+                        LogMessage($"{direction}: 连接已关闭");
+                        break;
+                    }
+
+                    // 写入数据
+                    await _serialPortLock.WaitAsync(token);
+                    try
+                    {
+                        // 再次验证目标流的状态
+                        if (!IsStreamValid(destination))
+                        {
+                            LogMessage($"{direction}: 目标流已关闭");
+                            break;
+                        }
+
+                        try
+                        {
+                            await destination.WriteAsync(buffer[..bytesRead], token);
+                            
+                            // 如果目标是串口，确保数据立即发送
+                            if (IsSerialPortStream(destination))
+                            {
+                                await destination.FlushAsync(token);
+                            }
+
+                            if (_showHex)
+                            {
+                                var data = buffer[..bytesRead].ToArray();
+                                LogMessage($"{direction}: 传输 {bytesRead} 字节\nHEX: {BitConverter.ToString(data)}");
+                            }
+                            else
+                            {
+                                LogMessage($"{direction}: 传输 {bytesRead} 字节");
+                            }
+                        }
+                        catch (IOException ex)
+                        {
+                            LogMessage($"{direction} 写入错误: {ex.Message}");
+                            await Task.Delay(100, token);
+                            continue;
+                        }
+                    }
+                    finally
+                    {
+                        _serialPortLock.Release();
+                    }
+
+                    // 防止CPU过度使用
+                    if (bytesRead < buffer.Length)
+                    {
+                        await Task.Delay(1, token);
                     }
                 }
             }
@@ -673,11 +730,37 @@ namespace TcpTransferSerialPortGui
             {
                 LogMessage($"{direction}: 传输已正常停止");
             }
-            catch (Exception ex) when (!(ex is OperationCanceledException))
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 LogMessage($"{direction} 错误: {ex.Message}");
+                LogMessage($"异常类型: {ex.GetType().Name}");
+                LogMessage($"堆栈跟踪: {ex.StackTrace}");
                 throw;
             }
+        }
+
+        private bool IsStreamValid(Stream stream)
+        {
+            if (stream == null) return false;
+            
+            if (IsSerialPortStream(stream))
+            {
+                return _serialPort?.IsOpen == true;
+            }
+            
+            // 对于网络流，检查是否仍然可用
+            if (stream is NetworkStream networkStream)
+            {
+                return networkStream.Socket?.Connected == true;
+            }
+            
+            return stream.CanRead && stream.CanWrite;
+        }
+
+        private bool IsSerialPortStream(Stream stream)
+        {
+            // 检查流是否来自串口
+            return stream == _serialPort?.BaseStream;
         }
 
         private async Task CloseNetworkOnly()
